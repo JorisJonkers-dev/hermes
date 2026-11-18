@@ -1,0 +1,5 @@
+# Required per repository. GitHub does not inherit CODEOWNERS from the org
+# defaults repository. The org has no teams, so ownership sits with the
+# maintainer account (same as litellm).
+
+* @ExtraToast
