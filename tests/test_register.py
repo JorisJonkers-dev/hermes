@@ -32,13 +32,15 @@ def test_the_plugin_registers_the_tiers_backend(registered):
     assert [p.name for p in registered.providers] == ["litellm-tiers"]
 
 
-def test_a_subagents_call_is_logged_through_the_hooks_hermes_fires(registered, capsys):
+def test_a_subagent_start_hook_marks_the_childs_later_calls(registered, capsys):
     registered.hooks["subagent_start"](child_session_id="child-9", parent_session_id="p")
-    registered.hooks["post_api_request"](
-        session_id="child-9", provider="litellm-tier-review", model="tier-review", response_model="gemma-4-31b"
+    request = httpx.Request(
+        "POST", "http://litellm.test/v1/chat/completions", headers={"x-hermes-session": "child-9"}, content=b"{}"
     )
-    entry = json.loads(capsys.readouterr().out)
-    assert (entry["subagent"], entry["tier"], entry["response_model"]) == (True, "tier-review", "gemma-4-31b")
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, headers={"x-litellm-model-id": "m"}))
+    with httpx.Client(transport=transport) as client:
+        client.send(request)
+    assert json.loads(capsys.readouterr().out)["subagent"] is True
 
 
 def test_the_manifest_declares_a_backend_named_like_its_directory(plugin):

@@ -3,6 +3,11 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def strong_open_key(monkeypatch):
+    monkeypatch.setenv("LITELLM_TIER_STRONG_OPEN_KEY", "k")
+
+
 @pytest.fixture
 def provider(plugin):
     return plugin.LiteLLMTiers()
@@ -26,6 +31,12 @@ def test_an_unknown_tier_is_refused_with_a_message_the_model_can_act_on(provider
 def test_a_tier_routes_to_its_provider_with_the_tier_as_the_model(provider, tier, model):
     route = provider.route_task({"goal": "x", "tier": tier}, {})
     assert (route["provider"], route["model"], route["label"]) == (f"litellm-{tier}", model, tier)
+
+
+def test_a_provider_for_strong_open_without_its_key_refuses_the_task_clearly(provider, route_error, monkeypatch):
+    monkeypatch.delenv("LITELLM_TIER_STRONG_OPEN_KEY", raising=False)
+    with pytest.raises(route_error, match="tier-strong-open is not enabled"):
+        provider.route_task({"goal": "x", "tier": "tier-strong-open"}, {})
 
 
 def test_a_route_never_falls_back_outside_the_tier(provider):

@@ -14,8 +14,8 @@ from typing import Any
 
 from agent.delegation_provider import DelegationProvider, DelegationRouteError
 
-from .serving import ServingRecorder, install_header_capture
-from .tiers import DEFAULT_TIER, TIERS, UnknownTierError, route_for
+from .serving import ServingRecorder, install_response_log
+from .tiers import DEFAULT_TIER, TIERS, TierUnavailableError, UnknownTierError, route_for
 
 BACKEND_NAME = "litellm-tiers"
 
@@ -49,7 +49,7 @@ class LiteLLMTiers(DelegationProvider):
         requested = task.get("tier", DEFAULT_TIER)
         try:
             route = route_for(requested)
-        except UnknownTierError as error:
+        except (UnknownTierError, TierUnavailableError) as error:
             raise DelegationRouteError(str(error)) from error
         return {
             "provider": route.provider,
@@ -64,7 +64,6 @@ def register(ctx: Any) -> None:
     import httpx
 
     recorder = ServingRecorder()
-    install_header_capture(recorder, httpx)
+    install_response_log(recorder, httpx)
     ctx.register_delegation_provider(LiteLLMTiers())
     ctx.register_hook("subagent_start", lambda **kw: recorder.note_subagent(kw.get("child_session_id")))
-    ctx.register_hook("post_api_request", lambda **kw: recorder.record_call(**kw))

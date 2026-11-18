@@ -29,8 +29,7 @@ RUN apt-get update \
 RUN git init /src \
  && git -C /src fetch --depth 1 https://github.com/NousResearch/hermes-agent.git "${HERMES_COMMIT}" \
  && git -C /src checkout --detach FETCH_HEAD \
- && cd /src \
- && uv sync --frozen --no-dev \
+ && uv sync --directory /src --frozen --no-dev \
  && rm -rf /src/.git
 
 # hadolint ignore=DL3006
@@ -57,6 +56,7 @@ COPY --from=build /opt/hermes /opt/hermes
 COPY --from=build /src /src
 COPY config/config.yaml /opt/hermes-seed/config.yaml
 COPY plugins/ /opt/hermes-seed/plugins/
+COPY docker/render_config.py /opt/hermes-seed/render_config.py
 COPY docker/entrypoint.sh /usr/local/bin/hermes-entrypoint
 
 # HERMES_HOME is an emptyDir: the entrypoint seeds it from the image's read-only copy on every

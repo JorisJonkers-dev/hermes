@@ -7,8 +7,13 @@
 #   - a throwaway clone: /work is an emptyDir, empty at every start and gone with the pod;
 #   - non-root and a read-only root filesystem: deploy-kit's hardening posture, with the image's own
 #     unprivileged user (uid 10001) and /tmp, /work and /home/hermes as the only writable paths;
-#   - egress: the edge to litellm below (an in-cluster Service) and internet egress for GitHub.
-#     Nothing else is reachable, but the Intent has no way to name GitHub alone: see `egress`.
+#   - egress: the edge to litellm below (an in-cluster Service) and internet egress, which is every
+#     public address: the Intent has no way to name GitHub alone (see `egress` and the residual risk).
+#
+# Residual risk: this pod reads untrusted content (pull requests of public repositories) while it holds
+# tier keys in its environment and can reach every public address. A prompt injection could send a key
+# out. Until deploy-kit can narrow egress to named hosts, the bounds are tier-scoped, budgeted keys and
+# the absence of any GitHub credential.
 #
 # Hermes's idle process only holds the sandbox open. Loops (the Renovate repair loop first) arrive
 # as `lifecycle: scheduled` processes of this Application, each running `hermes chat -q`.
@@ -27,7 +32,9 @@ applications:
         lifecycle: application
         image: hermes # ghcr.io/jorisjonkers-dev/hermes; the lock resolves digest, uid and gid
         runtime: none # Hermes exports no telemetry of its own; the serving-model lines go to stdout
-        command: [sleep, infinity]
+        # `args`, never `command`: `command` replaces the image ENTRYPOINT (tini, then the entrypoint that
+        # renders config.yaml and refuses to start without the tier providers), `args` replaces only CMD.
+        args: [sleep, infinity]
         probes: none
 
         # LiteLLM in the cluster: the edge derives the egress rule to its Service and hands the pod
@@ -43,8 +50,7 @@ applications:
         egress:
           to: internet
           reason: >-
-            Clones the public repositories a loop works on and pushes to and opens pull requests at
-            GitHub. No other host is called: models come from LiteLLM, over the edge above.
+            Clones the public repositories a loop works on from GitHub. No other host is called: models come from LiteLLM, over the edge above.
 
         secrets:
           # Placeholder names: the owner writes the values with estate bootstrap/secrets.sh.
@@ -52,8 +58,9 @@ applications:
           # (agent-kit registry/estate-tooling.yaml, litellm catalog/routing.json `key_models`).
           # litellm_tier_strong_open_key is the escalation key: leave it out of the secret and
           # tier-strong-open is simply refused by the proxy.
-          # github_pat is a fine-grained PAT scoped to the public repositories a loop may push to.
-          # Without it Hermes still clones and reads; it cannot push or open pull requests.
+          # Each key should be minted with a budget (litellm max_budget): the keys are in this process's
+          # environment, and the egress below is wider than GitHub, so a budget bounds a leak.
+          # There is deliberately no GitHub token here; see env/hermes/base.env.
           - path: secret/data/hermes/hermes
             keys:
               - litellm_free_key
@@ -61,7 +68,6 @@ applications:
               - litellm_tier_go_cheap_key
               - litellm_tier_review_key
               - { name: litellm_tier_strong_open_key, optional: true }
-              - { name: github_pat, optional: true }
             access: read
             delivery: env
             rotation: { tolerates: restart }
