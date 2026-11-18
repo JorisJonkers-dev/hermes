@@ -1,0 +1,5 @@
+# Exact pins, as the estate's testing standard asks. Renovate bumps them.
+httpx==0.28.1
+pytest==8.4.2
+pytest-cov==7.0.0
+ruff==0.14.3
