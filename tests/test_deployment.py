@@ -44,3 +44,14 @@ def test_every_secret_key_the_env_file_reads_is_granted_and_the_reverse(process)
     granted = {k if isinstance(k, str) else k["name"] for g in process["secrets"] for k in g["keys"]}
     env = (ROOT / "deploy" / "env" / "hermes" / "base.env").read_text()
     assert set(re.findall(r"\$\{secret:[^#]+#([a-z_]+)\}", env)) == granted
+
+
+def test_egress_is_narrowed_to_github_and_keeps_litellm_as_an_edge(process):
+    egress = process["egress"]
+    assert "to" not in egress
+    assert egress["reason"]
+    assert egress["hosts"] == [
+        {"host": "api.github.com", "port": 443},
+        {"host": "github.com", "port": 443},
+    ]
+    assert {"application": "litellm", "surface": "http"} in process["dependsOn"]
