@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!config/
+!plugins/
+!docker/
+**/__pycache__

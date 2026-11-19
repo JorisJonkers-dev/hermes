@@ -1,0 +1,2 @@
+# <path glob> <reason>
+Dockerfile The image installs git, tini and ca-certificates with apt, and uv and Hermes's locked dependencies with pip and uv, from the pinned Debian and Python images' own sources. Routing the build through the proxy needs its Debian layout and a build secret; tracked as a follow-up.

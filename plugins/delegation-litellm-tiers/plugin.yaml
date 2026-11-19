@@ -1,0 +1,5 @@
+name: delegation-litellm-tiers
+version: 1.0.0
+description: "Pick a LiteLLM tier per subagent: tier-free, tier-vibe, tier-go-cheap, tier-strong-open or tier-review. Refuses any other tier and logs the model that served each call."
+author: JorisJonkers-dev
+kind: backend

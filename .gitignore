@@ -66,3 +66,9 @@ templates/**/.claude/commands/speckit*.md
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Python tooling
+.venv/
+.coverage
+.pytest_cache/
+.ruff_cache/

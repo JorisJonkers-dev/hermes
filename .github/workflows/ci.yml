@@ -45,6 +45,7 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read # the pinned deploy-kit installs from npm.pkg.github.com
 
 jobs:
   # A skipped test whose quarantine ran out, names no issue, or lasts over 14 days fails the build
@@ -63,21 +64,55 @@ jobs:
       # secret scan, or a diff against the base ref).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # pip and npm resolve through the estate's package proxy (JorisJonkers-dev/workspace#167).
+      - uses: JorisJonkers-dev/github-workflows/actions/setup-package-proxy@8b5462a796f022647dfc44123ddb3655cc3c2f28 # v0.45.3
+        with:
+          token: ${{ secrets.PACKAGES_PROXY_TOKEN }}
+          require-package-proxy: true
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@jorisjonkers-dev'
+
+      - name: Install test tooling
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --require-virtualenv -r requirements-dev.txt
+
       - name: Lint
         if: ${{ !cancelled() }}
-        run: echo "replace with real lint"
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+          docker run --rm -i hadolint/hadolint:v2.12.0 < Dockerfile
 
       - name: Test
         if: ${{ !cancelled() }}
-        run: scripts/validate-templates.sh
+        run: |
+          scripts/validate-templates.sh
+          .venv/bin/python -m pytest
 
+      # Unit coverage is 100% of statements and branches (workspace docs/testing-standards.md, section 6);
+      # pyproject.toml's fail_under holds the line.
       - name: Coverage
         if: ${{ !cancelled() }}
-        run: echo "replace with the repo's real coverage gate — jacocoTestCoverageVerification >=80% for Gradle, or vitest/c8 --lines 80 for Node"
+        run: .venv/bin/python -m pytest --cov --cov-report=term-missing
+
+      - name: Project file validates with the pinned deploy-kit
+        if: ${{ !cancelled() }}
+        working-directory: tools/deploy-kit
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci --ignore-scripts
+          npx --no-install deploy-kit validate ../../deploy/hermes.project.yml ../../deploy/env
 
       - name: Build
         if: ${{ !cancelled() }}
-        run: echo "replace with real build"
+        run: docker build --tag hermes:ci .
 
       - name: Download actionlint
         id: actionlint

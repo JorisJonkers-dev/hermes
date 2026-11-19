@@ -1,0 +1,92 @@
+# Hermes configuration for the hosted deployment (JorisJonkers-dev/agent-kit#911).
+#
+# Models are reached only through LiteLLM, one custom provider per tier key. Each key is a
+# LiteLLM virtual key that holds one tier's chain (litellm catalog/routing.json `tier_groups`,
+# `key_models`), so the key, not Hermes, is what bounds what a call can reach and spend. The keys
+# arrive as environment variables from Vault (deploy/env/hermes/base.env); none is in this file.
+# The proxy is addressed in-cluster: the Project declares an edge to litellm, which hands the pod
+# LITELLM_HOST and LITELLM_PORT.
+# There is no subscription login: no OAuth provider is configured and no auth.json is written.
+#
+# Key names follow agent-kit registry/estate-tooling.yaml: the free tier uses the existing
+# LITELLM_FREE_KEY, the others LITELLM_TIER_<TIER>_KEY. tier-strong-open has no workstation key
+# (it is an escalation key); the hosted one is LITELLM_TIER_STRONG_OPEN_KEY.
+
+_config_version: 33
+
+model:
+  # The coordinator runs on Vibe Flash, which falls to Go Flash inside the proxy. A run that must
+  # stay free sets --provider litellm-tier-free.
+  default: tier-vibe
+  provider: litellm-tier-vibe
+
+providers:
+  litellm-tier-free:
+    api: http://${LITELLM_HOST}:${LITELLM_PORT}/v1
+    key_env: LITELLM_FREE_KEY
+    transport: chat_completions
+    session_affinity_header: x-hermes-session # the plugin reads the serving model per session
+    default_model: tier-free
+  litellm-tier-vibe:
+    api: http://${LITELLM_HOST}:${LITELLM_PORT}/v1
+    key_env: LITELLM_TIER_VIBE_KEY
+    transport: chat_completions
+    session_affinity_header: x-hermes-session # the plugin reads the serving model per session
+    default_model: tier-vibe
+  litellm-tier-go-cheap:
+    api: http://${LITELLM_HOST}:${LITELLM_PORT}/v1
+    key_env: LITELLM_TIER_GO_CHEAP_KEY
+    transport: chat_completions
+    session_affinity_header: x-hermes-session # the plugin reads the serving model per session
+    default_model: tier-go-cheap
+  litellm-tier-strong-open:
+    api: http://${LITELLM_HOST}:${LITELLM_PORT}/v1
+    key_env: LITELLM_TIER_STRONG_OPEN_KEY
+    transport: chat_completions
+    session_affinity_header: x-hermes-session # the plugin reads the serving model per session
+    default_model: tier-strong-open
+  litellm-tier-review:
+    api: http://${LITELLM_HOST}:${LITELLM_PORT}/v1
+    key_env: LITELLM_TIER_REVIEW_KEY
+    transport: chat_completions
+    session_affinity_header: x-hermes-session # the plugin reads the serving model per session
+    default_model: tier-review
+
+# No fallback to a provider outside LiteLLM, and none to the parent's route. Fallbacks are the
+# proxy's, per tier.
+fallback_providers: []
+
+# Auxiliary tasks bill at the main model's rate unless repointed. Hermes here works on public
+# repositories only, so these run on the free tier. Vision is untested on a free model: if it
+# fails, `hermes doctor` reports the block and the task runs on the main model.
+auxiliary:
+  compression:
+    provider: litellm-tier-free
+    model: tier-free
+  title_generation:
+    provider: litellm-tier-free
+    model: tier-free
+  vision:
+    provider: litellm-tier-free
+    model: tier-free
+  approval:
+    provider: litellm-tier-free
+    model: tier-free
+  mcp:
+    provider: litellm-tier-free
+    model: tier-free
+
+# A subagent's model comes from its tier, chosen by the plugin; Hermes ignores a per-call model
+# override (NousResearch/hermes-agent#17685). The plugin lives in plugins/delegation-litellm-tiers.
+plugins:
+  enabled:
+    - delegation-litellm-tiers
+
+delegation:
+  backend: litellm-tiers
+  provider: litellm-tier-free
+  model: tier-free
+  fallback_providers: []
+  max_concurrent_children: 3
+  max_spawn_depth: 1
+  worktree_isolation: false
