@@ -14,7 +14,7 @@
 #   3. Hermes answers on the free tier, with the provider, URL and key taken from config.yaml;
 #   4. the serving model of that call was logged as one JSON line;
 #   5. an unknown tier is refused, and tier-strong-open is refused when its key is not set;
-#   6. egress to a host other than LiteLLM and GitHub fails.
+#   6. egress is narrowed: GitHub answers through the pod's proxy, anything else fails, direct or proxied.
 set -euo pipefail
 
 NS="${HERMES_NAMESPACE:-hermes-system}"
@@ -120,18 +120,21 @@ PY
 expect REFUSED_OK "$out" "unknown tier was not refused"
 pass "unknown tier refused"
 
-# 6. egress to anything else fails. GitHub is reachable; the rest is not.
-# This fails today: deploy-kit can only declare `egress: internet`, and NetworkPolicy is render-only
-# in v1. SMOKE_EGRESS=skip reports it without failing, until both change.
+# 6. egress is narrowed to GitHub, through the Process's own proxy (deploy-kit host-narrowed egress).
+# The pod holds HTTPS_PROXY. A declared host connects through it; an undeclared host is refused by
+# it (CONNECT 403); a direct connection to any public address has no route; LiteLLM stays reachable
+# without it (NO_PROXY). SMOKE_EGRESS=skip reports the check without running it.
 if [[ "${SMOKE_EGRESS:-enforce}" == skip ]]; then
   printf 'skip egress check (SMOKE_EGRESS=skip)\n'
   exit 0
 fi
 out="$("${PY[@]}" <<'PY' 2>&1 || true
+import os
 import socket
+import urllib.parse
 
 
-def reach(host, port=443):
+def direct(host, port=443):
     try:
         socket.create_connection((host, port), timeout=5).close()
         return True
@@ -139,10 +142,35 @@ def reach(host, port=443):
         return False
 
 
-wrong = [h for h in ("github.com", "api.github.com") if not reach(h)]
-wrong += [h for h in ("example.com", "pypi.org", "api.openai.com", "openrouter.ai") if reach(h)]
-print("EGRESS_OK" if not wrong else f"unexpected reachability: {wrong}")
+def through_proxy(host, port=443):
+    """The proxy's answer to a CONNECT, as a status code, or None when it was not reached."""
+    proxy = urllib.parse.urlparse(os.environ.get("HTTPS_PROXY", ""))
+    if not proxy.hostname:
+        return None
+    try:
+        with socket.create_connection((proxy.hostname, proxy.port or 3128), timeout=10) as sock:
+            sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+            return int(sock.recv(256).split(b" ", 2)[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+problems = []
+if not os.environ.get("HTTPS_PROXY"):
+    problems.append("HTTPS_PROXY is not set")
+for host in ("github.com", "api.github.com"):
+    if through_proxy(host) != 200:
+        problems.append(f"{host} not reachable through the proxy")
+for host in ("example.com", "pypi.org", "api.openai.com", "openrouter.ai"):
+    if through_proxy(host) != 403:
+        problems.append(f"{host} not refused by the proxy")
+    if direct(host):
+        problems.append(f"{host} reachable directly")
+for host in ("github.com", "api.github.com"):
+    if direct(host):
+        problems.append(f"{host} reachable directly, past the proxy")
+print("EGRESS_OK" if not problems else f"unexpected egress: {problems}")
 PY
 )"
-expect EGRESS_OK "$out" "egress is not limited to GitHub and LiteLLM"
-pass "egress to other hosts fails"
+expect EGRESS_OK "$out" "egress is not narrowed to GitHub through the proxy"
+pass "egress limited to GitHub through the proxy"
