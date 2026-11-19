@@ -33,11 +33,50 @@ def test_the_entrypoint_renders_the_config_before_it_runs_anything_and_stops_on_
     assert next(i for i, line in enumerate(code) if "render_config.py" in line) < code.index('exec "$@"')
 
 
-def test_the_project_grants_no_github_credential(process):
+def test_the_idle_process_holds_no_github_credential(process):
     keys = [k if isinstance(k, str) else k["name"] for g in process["secrets"] for k in g["keys"]]
     assert not [k for k in keys if "github" in k or "pat" in k.split("_")]
     env = (ROOT / "deploy" / "env" / "hermes" / "base.env").read_text()
+    assert not re.search(r"^(GH_TOKEN|GITHUB_TOKEN)", env, re.M)
+
+
+@pytest.fixture(scope="module")
+def loop():
+    project = yaml.safe_load((ROOT / "deploy" / "hermes.project.yml").read_text())
+    return next(p for p in project["applications"][0]["processes"] if p["name"] == "renovate-repair")
+
+
+def test_the_renovate_loop_is_a_scheduled_process_through_the_image_entrypoint(loop):
+    assert loop["lifecycle"] == "scheduled"
+    assert len(loop["schedule"].split()) == 5
+    assert "command" not in loop
+    assert loop["args"] == ["python3", "-m", "loops.renovate_repair"]
+    assert "COPY loops/ /opt/hermes-seed/loops/" in (ROOT / "Dockerfile").read_text()
+
+
+def test_the_loops_github_token_is_an_optional_file_and_never_an_environment_variable(loop):
+    [grant] = [g for g in loop["secrets"] if "github" in g["path"]]
+    assert grant["delivery"] == "file"
+    assert grant["keys"] == [{"name": "renovate_repair_token", "optional": True}]
+    env = (ROOT / "deploy" / "env" / "renovate-repair" / "base.env").read_text()
+    assert "GITHUB_TOKEN_FILE=" + grant["mountAt"] in env
+    assert not re.search(r"\$\{secret:[^}]*github", env)
     assert not re.search(r"^(GH_TOKEN|GITHUB_TOKEN)=", env, re.M)
+
+
+def test_the_loop_is_not_granted_the_strong_open_or_any_claude_key(loop):
+    keys = {k if isinstance(k, str) else k["name"] for g in loop["secrets"] for k in g["keys"]}
+    assert not {k for k in keys if "strong_open" in k or "anthropic" in k or "claude" in k}
+    env = (ROOT / "deploy" / "env" / "renovate-repair" / "base.env").read_text()
+    assert "STRONG_OPEN" not in env
+
+
+def test_every_secret_key_the_loop_env_file_reads_is_granted(loop):
+    granted = {
+        k if isinstance(k, str) else k["name"] for g in loop["secrets"] if g["delivery"] == "env" for k in g["keys"]
+    }
+    env = (ROOT / "deploy" / "env" / "renovate-repair" / "base.env").read_text()
+    assert set(re.findall(r"\$\{secret:[^#]+#([a-z_]+)\}", env)) == granted
 
 
 def test_every_secret_key_the_env_file_reads_is_granted_and_the_reverse(process):

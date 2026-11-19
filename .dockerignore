@@ -2,5 +2,6 @@
 !Dockerfile
 !config/
 !plugins/
+!loops/
 !docker/
 **/__pycache__

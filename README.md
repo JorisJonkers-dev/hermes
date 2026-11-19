@@ -19,8 +19,9 @@ running in the estate's k3s cluster and routed through LiteLLM tier keys.
 | `config/config.yaml` | One custom provider per LiteLLM tier key, auxiliary models on `tier-free`, no subscription login, the tier plugin enabled. |
 | `plugins/delegation-litellm-tiers/` | The delegation provider (tier enum to LiteLLM tier group, unknown tier refused) and the serving-model log. |
 | `deploy/hermes.project.yml`, `deploy/env/` | The deploy-kit Project Intent: Vault keys, the edge to LiteLLM, writable paths, internet egress. |
+| `loops/renovate_repair/` | The Renovate repair loop (agent-kit#912): classifier, merge/comment/repair decisions, GitHub client, fixer, CLI. |
 | `scripts/smoke.sh` | The cluster smoke test. |
-| `tests/` | pytest, 100% line and branch coverage of the plugin. |
+| `tests/` | pytest, 100% line and branch coverage of the plugin and the loops. |
 
 ## Tiers and keys
 
@@ -67,9 +68,54 @@ This pod reads untrusted content (pull requests of public repositories) while it
 environment, and its egress is every public address: deploy-kit cannot yet name GitHub alone, and its
 NetworkPolicy is render-only. A prompt injection could therefore send a key out. Until that is fixed:
 
-- the pod holds **no GitHub credential**; pushes arrive with the Renovate loop (agent-kit#912), through
-  the git credential helper only, not the process environment;
+- the idle pod holds **no GitHub credential**. The Renovate loop's token is an optional file grant of its
+  own scheduled process, written to Vault only after deploy-kit#874 narrows egress to GitHub, and read
+  by the loop's `git push` through a credential helper, never from the environment;
 - mint every tier key with a budget and its tier's models only, so a leaked key is bounded and revocable.
+
+## Renovate repair loop
+
+`python3 -m loops.renovate_repair` sweeps the open Renovate pull requests (author `renovate[bot]`) of the
+public repositories of `JorisJonkers-dev` (agent-kit#912):
+
+| Pull request | What the loop does |
+|---|---|
+| A repository that is `private`, or whose `visibility` is not `public`, or archived | Nothing: it is skipped before its pull requests are requested. |
+| Major update, or an update type it cannot read | One comment (marked, so never repeated) that it needs a human. Never merged, whatever the checks say. |
+| Patch or minor, checks passing | Squash-merged, guarded by the head SHA it looked at. |
+| Patch or minor, checks failing | Repaired on the Renovate branch by a Hermes subagent, on `tier-free`, then `tier-vibe`, then `tier-go-cheap` (at most `--max-attempts`, default 3; never `tier-strong-open`, never Claude). After each pushed fix it waits for the checks, merges when they pass, and tries the next tier when they fail. If no tier fixes it, one comment lists what was tried and the loop stops on that commit. |
+| Checks running, or none | Left for the next run. |
+
+The update type is the highest of Renovate's labels, an `Update type:` line, the `old -> new` version pairs in
+the body and the title. On 0.x a minor step counts as major.
+
+Every repair attempt is one JSON line (`renovate_repair_attempt`: repo, PR, tier, attempt, outcome, serving
+model when known) and every decision another (`renovate_repair_decision`), written with the plugin's own
+writer, so they sit in the same stdout stream as the `serving_model` lines.
+
+The fixer clones the branch into `/work`, runs `hermes chat -q` there on the tier's provider with the token
+file variable removed from its environment, refuses any change under `.github/`, and then commits and pushes
+through a git credential helper that reads the token file. The model never holds the token.
+
+**The token** is a fine-grained PAT (public repositories of the organisation: Contents and Pull requests
+read and write, Checks and Commit statuses read; no Workflows). It is read from the file that
+`GITHUB_TOKEN_FILE` names; the variable never holds the token.
+
+```sh
+export GITHUB_TOKEN_FILE=$(mktemp) && gh auth token > "$GITHUB_TOKEN_FILE"
+python3 -m loops.renovate_repair --dry-run                      # first: prints a plan, writes nothing
+python3 -m loops.renovate_repair --dry-run --repo hermes        # one repository
+python3 -m loops.renovate_repair                                # for real
+rm "$GITHUB_TOKEN_FILE"
+```
+
+A dry run makes no merge, comment or push and starts no subagent: it prints one `renovate_repair_plan`
+line per pull request. Exit status: 0, 1 if any pull request or repository errored, 2 for no usable token.
+
+On the cluster it is the `renovate-repair` scheduled process of `deploy/hermes.project.yml` (hourly, at
+minute 17). It waits on deploy-kit#874: do not write `secret/data/hermes/github` (key
+`renovate_repair_token`) in Vault before that egress narrowing is in the Project. Without the key the file is
+not mounted and each run exits 2 having done nothing.
 
 ## Develop
 

@@ -1,7 +1,7 @@
 [project]
 name = "hermes-deployment"
 version = "0.0.0"
-description = "Tests for the hosted Hermes delegation plugin. Not a published package."
+description = "Tests for the hosted Hermes delegation plugin and loops. Not a published package."
 requires-python = ">=3.12"
 
 [tool.ruff]
@@ -14,11 +14,12 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C4", "PT"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["plugins/delegation-litellm-tiers", "docker"]
+source = ["plugins/delegation-litellm-tiers", "docker", "loops"]
 
 [tool.coverage.report]
 fail_under = 100

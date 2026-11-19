@@ -13,10 +13,13 @@
 # Residual risk: this pod reads untrusted content (pull requests of public repositories) while it holds
 # tier keys in its environment and can reach every public address. A prompt injection could send a key
 # out. Until deploy-kit can narrow egress to named hosts, the bounds are tier-scoped, budgeted keys and
-# the absence of any GitHub credential.
+# the absence of any GitHub credential: the renovate-repair process below holds a GitHub token only as
+# an optional file grant, and the owner writes that Vault key only once deploy-kit#874 (egress narrowed
+# to named hosts) is in this file. Until then the key is absent, the file is not mounted and the loop
+# exits 2 at the start of every run, having done nothing.
 #
-# Hermes's idle process only holds the sandbox open. Loops (the Renovate repair loop first) arrive
-# as `lifecycle: scheduled` processes of this Application, each running `hermes chat -q`.
+# Hermes's idle process only holds the sandbox open. Loops arrive as `lifecycle: scheduled`
+# processes of this Application: renovate-repair (agent-kit#912) is the first.
 
 apiVersion: intent.jorisjonkers.dev/v1
 kind: Project
@@ -81,3 +84,60 @@ applications:
         writablePaths: [/tmp, /home/hermes, /work]
 
         cutover: continuous
+
+      # The Renovate repair loop (agent-kit#912): hourly, over the open Renovate pull requests of the
+      # public repositories of JorisJonkers-dev. See README.md, "Renovate repair loop". It runs to
+      # completion; a slot that falls while a run is going is skipped.
+      #
+      # WAITS ON deploy-kit#874: this Process reaches GitHub and LiteLLM, so it needs egress narrowed
+      # to api.github.com and github.com, which the Intent cannot say yet. It declares the same
+      # `internet` rule as the idle process and nothing wider; do not write secret/data/hermes/github
+      # in Vault before the narrowed egress lands here. Without the key the file is not mounted and
+      # the loop exits 2 ("GITHUB_TOKEN_FILE ... cannot read"), so the schedule is safe to merge now.
+      - name: renovate-repair
+        lifecycle: scheduled
+        schedule: "17 * * * *"
+        image: hermes
+        runtime: none
+        # Through the entrypoint (`args`, never `command`), so config.yaml is rendered first.
+        args: [python3, -m, loops.renovate_repair]
+
+        dependsOn:
+          - { application: litellm, surface: http }
+
+        egress:
+          to: internet
+          reason: >-
+            Reads the open Renovate pull requests of public repositories from api.github.com, clones the
+            branch it repairs and pushes the fix to github.com. No other host is called: models come from LiteLLM, over the edge above.
+
+        secrets:
+          # The same tier keys as the idle process. strong-open is not granted: the loop never uses it.
+          - path: secret/data/hermes/hermes
+            keys:
+              - litellm_free_key
+              - litellm_tier_vibe_key
+              - litellm_tier_go_cheap_key
+              - litellm_tier_review_key
+            access: read
+            delivery: env
+            rotation: { tolerates: restart }
+          # A fine-grained PAT for JorisJonkers-dev public repositories: Contents, Pull requests and Commit
+          # statuses/Checks read, write on the first two, and no Workflows permission. Delivered as one
+          # file, never as an environment variable: only the loop's git push reads it, through a
+          # credential helper, and the model's own process is started without GITHUB_TOKEN_FILE.
+          # Optional until deploy-kit#874 narrows egress; see the comment above this Process.
+          - path: secret/data/hermes/github
+            keys:
+              - { name: renovate_repair_token, optional: true }
+            access: read
+            delivery: file
+            mountAt: /run/secrets/github/token
+            fileMode: "0400"
+            rotation: { tolerates: restart }
+
+        placement:
+          memory: 1Gi
+          cpu: 250m
+
+        writablePaths: [/tmp, /home/hermes, /work]
