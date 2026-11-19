@@ -27,6 +27,20 @@ ARROW = "→"
         ("Revert foo from 2.0.0 to 1.0.0", "", [], "major"),
         ("Update foo", "| a | `1.0.0` -> `1.0.1` |\n| b | `2.0.0` -> `3.0.0` |", [], "major"),
         ("Update foo", "Update type: patch", ["major"], "major"),
+        (
+            "Update image",
+            "Update type: digest\n| img | `1a2b3c4d5e` -> `9f8e7d6c5b` |",
+            [],
+            "patch",
+        ),  # a digest is not a version
+        (
+            "Update image",
+            "| img | `sha256:12ab` -> `sha256:34cd` |",
+            [],
+            "major",
+        ),  # and with nothing else it is unreadable
+        ("Update foo", "release notes quote: Update type: patch (not at the line start)", [], "major"),
+        ("Update foo", "- Update type: minor", [], "minor"),
         ("Update dependency foo to v2", "", [], "major"),  # nothing readable: a human
     ],
 )

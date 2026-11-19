@@ -12,7 +12,7 @@ from loops.renovate_repair import routing
 def test_the_log_writes_one_json_line_through_the_sink():
     lines = []
     log = routing.RoutingLog(lines.append, lambda: 12.34567)
-    log.attempt(repo="o/a", pr=2, tier="tier-free", attempt=1, outcome="fixed", model="m")
+    log.attempt(repo="o/a", pr=2, tier="tier-free", attempt=1, outcome="fixed", model="m", detail="d" * 400)
     log.decision(repo="o/a", pr=2, action="merge", update_type="patch", detail="d", dry_run=False)
     log.decision(repo="o/a", pr=2, action="merge", update_type="patch", detail="d", dry_run=True)
     events = [json.loads(line) for line in lines]
@@ -30,6 +30,7 @@ def test_the_log_writes_one_json_line_through_the_sink():
         "attempt": 1,
         "outcome": "fixed",
         "model": "m",
+        "detail": "d" * 300,
     }
     assert lines[0] == json.dumps(events[0], sort_keys=True, separators=(",", ":"))
 

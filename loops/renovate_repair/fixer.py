@@ -1,10 +1,16 @@
 """Ask a Hermes subagent to repair a failing Renovate pull request, on the Renovate branch.
 
-The fixer works in a throwaway clone below the work directory. The model runs in that clone with
-no GitHub credential: the environment it gets has the token file variable removed, and it cannot
-push. The loop pushes afterwards, through a git credential helper that reads the token file, so
-the token is in no argument and in no process environment but git's own. A change that touches
-``.github/`` is refused: the loop does not let a model edit the workflows that run with secrets.
+The subagent works in a throwaway clone below the work directory, in an environment without
+``GITHUB_TOKEN_FILE``. Nothing it writes is trusted: when it is done, the loop takes its change as a
+patch against the commit it started from, refuses a patch that touches ``.github/`` (the workflows run
+with secrets), applies it to a second, clean clone that the model never touched (so no hook, git
+configuration or remote of the model's clone is ever used), commits, and pushes from there through a
+git credential helper that reads the token file. The token is in no argument and in no environment but
+git's own.
+
+This does not hide the token file from the subagent: it runs as the same user in the same pod, so a
+tool of its own could read the file. What bounds that is the token's scope (public repositories of one
+organisation, no workflow permission) and the pod's egress (deploy-kit#874), not this module.
 """
 
 from __future__ import annotations
@@ -48,10 +54,19 @@ Runner = Callable[[Sequence[str], Path | None, Mapping[str, str], int], Run]
 def subprocess_runner(argv: Sequence[str], cwd: Path | None, env: Mapping[str, str], timeout: int) -> Run:
     try:
         done = subprocess.run(  # noqa: S603
-            list(argv), cwd=cwd, env=dict(env), capture_output=True, text=True, timeout=timeout, check=False
+            list(argv),
+            cwd=cwd,
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return Run(124, "", f"timed out after {timeout}s")
+    except OSError as error:  # the program is not there
+        return Run(127, "", f"cannot run {argv[0]}: {error.strerror}")
     return Run(done.returncode, done.stdout, done.stderr)
 
 
@@ -110,60 +125,78 @@ class HermesFixer:
             shutil.rmtree(workdir, ignore_errors=True)
 
     def _fix_in(self, workdir: Path, repo: Repo, pull: PullRequest, tier: str, failing: Sequence[Check]) -> FixResult:
-        model_env = {k: v for k, v in self._environ.items() if k != TOKEN_VARIABLE}
-        clone = workdir / "clone"
+        env = {k: v for k, v in self._environ.items() if k != TOKEN_VARIABLE}
         url = f"https://github.com/{repo.full_name}.git"
-        cloned = self._git(["clone", "--depth", "50", "--branch", pull.head_ref, url, str(clone)], None, model_env)
+        work = workdir / "work"
+        cloned = self._clone(url, pull.head_ref, work, env)
         if cloned.code:
             return FixResult(False, f"clone failed: {cloned.stderr.strip()[:300]}")
+        base = self._git(["rev-parse", "HEAD"], work, env).stdout.strip()
         route = tier_routes()[tier]
-        ask = [
-            self._hermes,
-            "chat",
-            "-q",
-            build_prompt(repo, pull, failing),
-            "--provider",
-            route.provider,
-            "-m",
-            route.model,
-        ]
-        ran = self._runner(ask, clone, model_env, HERMES_TIMEOUT_S)
+        prompt = build_prompt(repo, pull, failing)
+        ask = [self._hermes, "chat", "-q", prompt, "--provider", route.provider, "-m", route.model]
+        ran = self._runner(ask, work, env, HERMES_TIMEOUT_S)
         model = serving_model(ran.stdout)
         if ran.code:
             return FixResult(False, f"hermes exited {ran.code}: {ran.stderr.strip()[:300]}", model)
-        changed = self._git(["status", "--porcelain", "--untracked-files=all"], clone, model_env).stdout.splitlines()
-        if not changed:
+        # Against the commit it started from, so a commit the subagent made itself is in the patch too.
+        self._git(["add", "--all"], work, env)
+        names = self._git(["diff", "--cached", "--name-only", "--no-renames", base], work, env).stdout.splitlines()
+        if not names:
             return FixResult(False, "the subagent made no change", model)
-        if any(".github/" in line for line in changed):
+        if any(_is_workflow(name) for name in names):
             return FixResult(False, "the subagent changed .github/, which the loop refuses to push", model)
-        return self._commit_and_push(clone, pull, model)
+        patch = self._git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", base], work, env).stdout
+        patch_file = workdir / "fix.patch"
+        patch_file.write_text(patch, errors="surrogateescape")
+        return self._push_patch(workdir, url, pull, base, patch_file, model, env)
 
-    def _commit_and_push(self, clone: Path, pull: PullRequest, model: str | None) -> FixResult:
+    def _clone(self, url: str, ref: str, into: Path, env: Mapping[str, str]) -> Run:
+        return self._git(["clone", "--depth", "50", "--branch", ref, url, str(into)], None, env)
+
+    def _push_patch(
+        self,
+        workdir: Path,
+        url: str,
+        pull: PullRequest,
+        base: str,
+        patch: Path,
+        model: str | None,
+        env: Mapping[str, str],
+    ) -> FixResult:
+        """Apply ``patch`` to a clean clone, and commit and push from there. Only the push gets the token file."""
+        clean = workdir / "clean"
+        cloned = self._clone(url, pull.head_ref, clean, env)
+        if cloned.code:
+            return FixResult(False, f"clone failed: {cloned.stderr.strip()[:300]}", model)
+        if self._git(["rev-parse", "HEAD"], clean, env).stdout.strip() != base:
+            return FixResult(False, "the branch moved while the subagent worked", model)
         identity = {
             "GIT_AUTHOR_NAME": "hermes",
             "GIT_AUTHOR_EMAIL": "hermes@users.noreply.github.com",
             "GIT_COMMITTER_NAME": "hermes",
             "GIT_COMMITTER_EMAIL": "hermes@users.noreply.github.com",
         }
-        env = {k: v for k, v in self._environ.items() if k != TOKEN_VARIABLE} | identity
-        for args in (["add", "--all"], ["commit", "--message", COMMIT_MESSAGE]):
-            step = self._git(args, clone, env)
+        steps = (["apply", "--index", "--whitespace=nowarn", str(patch)], ["commit", "--message", COMMIT_MESSAGE])
+        for args in steps:
+            step = self._git(args, clean, env | identity)
             if step.code:
                 return FixResult(False, f"git {args[0]} failed: {step.stderr.strip()[:300]}", model)
-        # Only the push sees the token file, and only through the helper.
-        pushed = self._git(
-            [
-                "-c",
-                "credential.helper=",
-                "-c",
-                f"credential.helper={CREDENTIAL_HELPER}",
-                "push",
-                "origin",
-                f"HEAD:refs/heads/{pull.head_ref}",
-            ],
-            clone,
-            self._environ,
-        )
+        changed = self._git(["diff", "--name-only", "--no-renames", f"{base}..HEAD"], clean, env).stdout.splitlines()
+        if any(_is_workflow(name) for name in changed):
+            return FixResult(False, "the patch changes .github/, which the loop refuses to push", model)
+        # An explicit URL, no hooks, and a reset helper list: nothing but the helper below sees the token.
+        push = [
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "credential.helper=",
+            "-c", f"credential.helper={CREDENTIAL_HELPER}",
+            "push", url, f"HEAD:refs/heads/{pull.head_ref}",
+        ]  # fmt: skip
+        pushed = self._git(push, clean, self._environ)
         if pushed.code:
             return FixResult(False, f"push failed: {pushed.stderr.strip()[:300]}", model)
         return FixResult(True, "pushed a fix to the Renovate branch", model)
+
+
+def _is_workflow(path: str) -> bool:
+    return path.startswith(".github/") or "/.github/" in path

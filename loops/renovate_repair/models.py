@@ -41,6 +41,7 @@ class PullRequest:
     head_sha: str
     head_ref: str
     head_repo: str  # full name of the repository the branch lives in; differs from the base for a fork
+    draft: bool = False
 
 
 @dataclass(frozen=True)

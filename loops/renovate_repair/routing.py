@@ -55,9 +55,18 @@ class RoutingLog:
         self._sink(json.dumps(line, sort_keys=True, separators=(",", ":")))
         return line
 
-    def attempt(self, *, repo: str, pr: int, tier: str, attempt: int, outcome: str, model: str | None) -> None:
+    def attempt(
+        self, *, repo: str, pr: int, tier: str, attempt: int, outcome: str, model: str | None, detail: str = ""
+    ) -> None:
         self.write(
-            "renovate_repair_attempt", repo=repo, pr=pr, tier=tier, attempt=attempt, outcome=outcome, model=model
+            "renovate_repair_attempt",
+            repo=repo,
+            pr=pr,
+            tier=tier,
+            attempt=attempt,
+            outcome=outcome,
+            model=model,
+            detail=detail[:300],
         )
 
     def decision(self, *, repo: str, pr: int, action: str, update_type: str, detail: str, dry_run: bool) -> None:

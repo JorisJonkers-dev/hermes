@@ -68,3 +68,26 @@ def test_main_reads_the_process_arguments_and_environment_by_default(monkeypatch
     monkeypatch.setattr("sys.argv", ["x", "--dry-run"])
     monkeypatch.delenv("GITHUB_TOKEN_FILE", raising=False)
     assert cli.main() == 2
+
+
+@pytest.mark.parametrize("flag", ["--max-attempts", "--max-repairs"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_counts_below_one_are_refused(flag, value):
+    with pytest.raises(SystemExit):
+        cli.parse_args([flag, value])
+
+
+def test_a_failed_repository_listing_exits_1_with_a_message(monkeypatch, tmp_path, capsys):
+    token = tmp_path / "token"
+    token.write_text("tok")
+
+    class Loop:
+        def __init__(self, *args):
+            pass
+
+        def run(self):
+            raise cli.GitHubError("GET /orgs/o/repos failed: OSError")
+
+    monkeypatch.setattr(cli, "RepairLoop", Loop)
+    assert cli.main(["--work-dir", str(tmp_path)], {"GITHUB_TOKEN_FILE": str(token)}) == 1
+    assert "OSError" in capsys.readouterr().err

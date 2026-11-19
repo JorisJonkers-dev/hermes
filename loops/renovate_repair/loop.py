@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .classify import MAJOR, classify
 from .fixer import Fixer
 from .github import GitHub, GitHubError
-from .models import FAILING, NO_CHECKS, PASSING, PENDING, RENOVATE_LOGIN, Check, Outcome, PullRequest, Repo
+from .models import FAILING, NO_CHECKS, PASSING, PENDING, RENOVATE_LOGIN, Check, FixResult, Outcome, PullRequest, Repo
 from .routing import FIX_TIERS, RoutingLog
 
 MAJOR_MARKER = "<!-- renovate-repair:major -->"
@@ -38,6 +38,7 @@ class Settings:
     dry_run: bool = False
     tiers: tuple[str, ...] = FIX_TIERS
     max_attempts: int = 3
+    max_repairs: int = 2  # pull requests repaired per run: a run must fit its hourly slot
     wait_s: float = 1800
     poll_s: float = 30
 
@@ -68,6 +69,7 @@ class RepairLoop:
         self._settings = settings
         self._sleep = sleep
         self._monotonic = monotonic
+        self._repairs = 0
 
     def run(self) -> list[Outcome]:
         outcomes: list[Outcome] = []
@@ -112,6 +114,8 @@ class RepairLoop:
         return Outcome(repo.full_name, pull.number, action, detail)
 
     def _handle(self, repo: Repo, pull: PullRequest) -> Outcome:
+        if pull.draft:
+            return self._decide(repo, pull, "unknown", "wait", "a draft; left for the next run")
         update_type = classify(pull.title, pull.body, pull.labels)
         if update_type == MAJOR:
             return self._major(repo, pull)
@@ -144,19 +148,24 @@ class RepairLoop:
         tiers = self._settings.tiers[: self._settings.max_attempts]
         if self._settings.dry_run:
             return self._decide(repo, pull, update_type, "repair", f"would fix on {', '.join(tiers)}, then merge")
+        if self._repairs >= self._settings.max_repairs:
+            return self._decide(
+                repo, pull, update_type, "wait", "this run's repair budget is spent; left for the next run"
+            )
+        self._repairs += 1
         tried: list[str] = []
         current = pull
         for attempt, tier in enumerate(tiers, start=1):
             failing = [c for c in self._github.checks(repo, current.head_sha) if c.state == "failure"]
             result = self._fixer.fix(repo, current, tier, failing)
             if not result.pushed:
-                self._attempt(repo, pull, tier, attempt, "no-fix", result.model)
-                tried.append(f"{tier}: no fix pushed ({result.detail})")
+                self._attempt(repo, pull, tier, attempt, "no-fix", result)
+                tried.append(f"{tier}: no fix pushed")
                 continue
             current = self._github.pull(repo, pull.number)
             state = self._wait_for_checks(repo, current)
             outcome = {PASSING: "fixed", FAILING: "checks-failed"}.get(state, "checks-timeout")
-            self._attempt(repo, pull, tier, attempt, outcome, result.model)
+            self._attempt(repo, pull, tier, attempt, outcome, result)
             if state == PASSING:
                 self._github.merge(repo, pull.number, current.head_sha)
                 outcome_record = self._decide(repo, pull, update_type, "fix-and-merge", f"fixed on {tier}, then merged")
@@ -180,8 +189,17 @@ class RepairLoop:
         result.attempts = tried
         return result
 
-    def _attempt(self, repo: Repo, pull: PullRequest, tier: str, attempt: int, outcome: str, model: str | None) -> None:
-        self._log.attempt(repo=repo.full_name, pr=pull.number, tier=tier, attempt=attempt, outcome=outcome, model=model)
+    def _attempt(self, repo: Repo, pull: PullRequest, tier: str, attempt: int, outcome: str, result: FixResult) -> None:
+        # The detail goes to the routing log only. It can hold tool output, so it is never put in a comment.
+        self._log.attempt(
+            repo=repo.full_name,
+            pr=pull.number,
+            tier=tier,
+            attempt=attempt,
+            outcome=outcome,
+            model=result.model,
+            detail=result.detail,
+        )
 
     def _wait_for_checks(self, repo: Repo, pull: PullRequest) -> str:
         """Poll until the checks of ``pull``'s head finish, or ``wait_s`` passes. Returns the state."""

@@ -85,6 +85,7 @@ def _pull(item: Mapping[str, Any]) -> PullRequest:
         head_sha=head["sha"],
         head_ref=head["ref"],
         head_repo=head_repo.get("full_name", ""),
+        draft=bool(item.get("draft", False)),
     )
 
 
@@ -120,10 +121,14 @@ class RestGitHub:
     def _call(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
         body = json.dumps(payload).encode() if payload is not None else None
         headers = {**self._headers, **({"Content-Type": "application/json"} if body else {})}
-        status, data = self._transport(method, self._api + path, headers, body)
-        if status >= 400:
-            raise GitHubError(f"{method} {path.split('?')[0]} failed with status {status}")
-        return json.loads(data) if data else None
+        where = f"{method} {path.split('?')[0]}"
+        try:
+            status, data = self._transport(method, self._api + path, headers, body)
+            if status >= 400:
+                raise GitHubError(f"{where} failed with status {status}")
+            return json.loads(data) if data else None
+        except (OSError, ValueError) as error:  # network failure, timeout, or a body that is not JSON
+            raise GitHubError(f"{where} failed: {type(error).__name__}") from error
 
     def _pages(self, path: str, key: str | None = None) -> list[Any]:
         items: list[Any] = []

@@ -199,3 +199,24 @@ def test_paging_stops_at_the_page_cap_even_if_every_page_is_full():
     full = json.dumps([{"number": i, "head": {"sha": "s", "ref": "r"}} for i in range(100)]).encode()
     client = gh.RestGitHub("tok", lambda method, url, headers, body: (200, full))
     assert len(client.open_pulls(PUBLIC)) == 100 * gh.MAX_PAGES
+
+
+@pytest.mark.parametrize("failure", [OSError("down"), TimeoutError(), urllib.error.URLError("dns")])
+def test_a_network_failure_is_a_github_error_naming_only_the_call(failure):
+    def transport(method, url, headers, body):
+        raise failure
+
+    with pytest.raises(gh.GitHubError) as error:
+        gh.RestGitHub("tok", transport).pull(PUBLIC, 1)
+    assert str(error.value) == f"GET /repos/o/app/pulls/1 failed: {type(failure).__name__}"
+
+
+def test_a_body_that_is_not_json_is_a_github_error():
+    with pytest.raises(gh.GitHubError, match="JSONDecodeError"):
+        gh.RestGitHub("tok", lambda *a: (200, b"<html>")).pull(PUBLIC, 1)
+
+
+def test_a_draft_flag_is_read():
+    item = {"number": 1, "draft": True, "head": {"sha": "s", "ref": "r"}}
+    client = gh.RestGitHub("tok", lambda *a: (200, json.dumps(item).encode()))
+    assert client.pull(PUBLIC, 1).draft is True

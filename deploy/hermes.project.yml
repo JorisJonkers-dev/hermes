@@ -125,7 +125,9 @@ applications:
           # A fine-grained PAT for JorisJonkers-dev public repositories: Contents, Pull requests and Commit
           # statuses/Checks read, write on the first two, and no Workflows permission. Delivered as one
           # file, never as an environment variable: only the loop's git push reads it, through a
-          # credential helper, and the model's own process is started without GITHUB_TOKEN_FILE.
+          # credential helper, and the model's own process is started without GITHUB_TOKEN_FILE. The
+          # file itself is readable by the model's process (same user, same pod): the token's scope and
+          # the narrowed egress of deploy-kit#874 are what bound a leak, not file permissions.
           # Optional until deploy-kit#874 narrows egress; see the comment above this Process.
           - path: secret/data/hermes/github
             keys:

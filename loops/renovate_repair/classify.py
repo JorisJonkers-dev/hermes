@@ -1,7 +1,7 @@
 """Read the update type of a Renovate pull request: patch, minor or major.
 
-The signals, strongest last: Renovate's labels, an ``Update type: <x>`` line, the version pairs of
-the body's change tables (```1.2.3` -> `1.2.4```), and the old and new version of the title. The
+The signals: Renovate's labels, an ``Update type: <x>`` line (at the start of a line), the version pairs
+of the body's change tables (```1.2.3` -> `1.2.4```), and the old and new version of the title. The
 highest type found wins, so a grouped pull request is as risky as its riskiest member. A pull
 request that shows no signal at all is a ``major``: an unreadable update goes to a human, it is not
 merged.
@@ -16,8 +16,9 @@ PATCH, MINOR, MAJOR = "patch", "minor", "major"
 _RANK = {PATCH: 0, MINOR: 1, MAJOR: 2}
 
 _LABEL = re.compile(r"\b(major|minor|patch)\b", re.I)
-_DECLARED = re.compile(r"update type:\s*`?(major|minor|patch|digest|pin)`?", re.I)
-_VERSION = r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?"
+_DECLARED = re.compile(r"^[ \t>*-]*update type:\s*`?(major|minor|patch|digest|pin)`?", re.I | re.M)
+#: A version, and not the leading digits of a word (a digest such as ``1a2b...`` is not one).
+_VERSION = r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?!\w)"
 _PAIR = re.compile(rf"`{_VERSION}[^`]*`\s*(?:->|→)\s*`{_VERSION}[^`]*`")
 _TITLE_PAIR = re.compile(rf"\bfrom\s+{_VERSION}\S*\s+to\s+{_VERSION}", re.I)
 #: A digest or a pin changes no version, so the update is as small as a patch.

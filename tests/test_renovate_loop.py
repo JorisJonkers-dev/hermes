@@ -76,7 +76,7 @@ def test_a_patch_with_a_failing_check_is_fixed_by_the_first_tier_that_succeeds_t
     assert [tier for tier, _ in fixer.calls] == ["tier-free", "tier-vibe"]
     assert github.writes == [("merge", "app", 1, "s2")]  # the merge is of the fixed head
     assert outcome.action == "fix-and-merge"
-    assert outcome.attempts == ["tier-free: no fix pushed (scripted)", "tier-vibe: fixed"]
+    assert outcome.attempts == ["tier-free: no fix pushed", "tier-vibe: fixed"]
     attempts = lines.of("renovate_repair_attempt")
     assert [(a["tier"], a["attempt"], a["outcome"], a["model"]) for a in attempts] == [
         ("tier-free", 1, "no-fix", None),
@@ -117,6 +117,14 @@ def test_it_never_tries_a_tier_outside_the_three_and_honours_max_attempts():
     loop, fixer, _, _ = build(github, steps, max_attempts=1)
     loop.run()
     assert [tier for tier, _ in fixer.calls] == ["tier-free"]
+
+
+def test_the_comment_never_carries_the_tool_output_but_the_log_does():
+    github = fixture_repo(make_pull(), BAD)
+    loop, _, lines, _ = build(github, [(False, "", [])] * 3)
+    loop.run()
+    assert "scripted" not in github.writes[0][3]
+    assert {a["detail"] for a in lines.of("renovate_repair_attempt")} == {"scripted"}
 
 
 def test_a_run_that_already_gave_up_on_a_commit_does_not_try_again():
@@ -283,3 +291,24 @@ def test_a_repository_whose_pulls_cannot_be_listed_is_reported_and_skipped():
 )
 def test_checks_add_up(checks, state):
     assert aggregate(checks) == state
+
+
+def test_a_draft_is_left_alone():
+    draft = make_pull()
+    draft = type(draft)(**{**draft.__dict__, "draft": True})
+    github = fixture_repo(draft, OK)
+    [outcome] = build(github)[0].run()
+    assert (outcome.action, github.writes) == ("wait", [])
+
+
+def test_a_run_repairs_at_most_max_repairs_pull_requests():
+    github = FakeGitHub(
+        repos=[make_repo()],
+        pulls={"app": [make_pull(n, sha=f"s{n}") for n in (1, 2, 3)]},
+        checks_by_sha={"s1": BAD, "s2": BAD, "s3": BAD},
+    )
+    loop, fixer, _, _ = build(github, [(False, "", [])] * 9, max_repairs=2)
+    outcomes = loop.run()
+    assert [o.action for o in outcomes] == ["give-up", "give-up", "wait"]
+    assert "budget" in outcomes[2].detail
+    assert len(fixer.calls) == 6

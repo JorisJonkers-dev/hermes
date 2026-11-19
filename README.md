@@ -93,9 +93,15 @@ Every repair attempt is one JSON line (`renovate_repair_attempt`: repo, PR, tier
 model when known) and every decision another (`renovate_repair_decision`), written with the plugin's own
 writer, so they sit in the same stdout stream as the `serving_model` lines.
 
-The fixer clones the branch into `/work`, runs `hermes chat -q` there on the tier's provider with the token
-file variable removed from its environment, refuses any change under `.github/`, and then commits and pushes
-through a git credential helper that reads the token file. The model never holds the token.
+The fixer clones the branch into `/work`, runs `hermes chat -q` there on the tier's provider with
+`GITHUB_TOKEN_FILE` removed from its environment, and takes its change as a patch against the commit it
+started from. A patch that touches `.github/` is refused. Otherwise the patch is applied to a second, clean
+clone (so no hook or git configuration the subagent wrote is ever used), committed, and pushed from there
+to an explicit URL through a git credential helper that reads the token file. This keeps the token out of
+every argument and environment but git's. It does **not** hide the file from the subagent, which runs as
+the same user in the same pod: the bounds are the token's scope and deploy-kit#874. A run repairs at most
+`--max-repairs` pull requests (default 2), so it fits its hourly slot; the rest wait for the next run.
+Draft pull requests are left alone, and tool output goes to the log, never into a comment.
 
 **The token** is a fine-grained PAT (public repositories of the organisation: Contents and Pull requests
 read and write, Checks and Commit statuses read; no Workflows). It is read from the file that
