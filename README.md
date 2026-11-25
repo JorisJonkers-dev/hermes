@@ -18,7 +18,7 @@ running in the estate's k3s cluster and routed through LiteLLM tier keys.
 | `Dockerfile`, `docker/entrypoint.sh` | Hermes v0.23.2 (commit `ae2a81cc`, installed from its `uv.lock`), non-root uid 10001, read-only root filesystem; the entrypoint seeds `HERMES_HOME` from the image. |
 | `config/config.yaml` | One custom provider per LiteLLM tier key, auxiliary models on `tier-free`, no subscription login, the tier plugin enabled. |
 | `plugins/delegation-litellm-tiers/` | The delegation provider (tier enum to LiteLLM tier group, unknown tier refused) and the serving-model log. |
-| `deploy/hermes.project.yml`, `deploy/env/` | The deploy-kit Project Intent: Vault keys, the edge to LiteLLM, writable paths, internet egress. |
+| `deploy/hermes.project.yml`, `deploy/env/` | The deploy-kit Project Intent: Vault keys, the edge to LiteLLM, writable paths, egress narrowed to GitHub. |
 | `loops/renovate_repair/` | The Renovate repair loop (agent-kit#912): classifier, merge/comment/repair decisions, GitHub client, fixer, CLI. |
 | `scripts/smoke.sh` | The cluster smoke test. |
 | `tests/` | pytest, 100% line and branch coverage of the plugin and the loops. |
@@ -65,11 +65,15 @@ backend or a tier main model. The Project passes `sleep infinity` as `args`, nev
 ## Residual risk
 
 This pod reads untrusted content (pull requests of public repositories) while it holds tier keys in its
-environment, and its egress is every public address: deploy-kit cannot yet name GitHub alone, and its
-NetworkPolicy is render-only. A prompt injection could therefore send a key out. Until that is fixed:
+environment. Its egress is narrowed to `api.github.com` and `github.com` on 443 (deploy-kit 1.12.0):
+the Process reaches them only through its own allowlisting proxy (`hermes-egress`, squid), reads
+`HTTPS_PROXY`, and keeps LiteLLM and the cluster's names on `NO_PROXY`, and its NetworkPolicy, applied
+for this Process, leaves no other public route. A prompt injection can no longer send a key to an
+arbitrary host, but it can still send one to GitHub (a comment, an issue or a gist, if a credential
+allowed it), and DNS queries stay open as a covert channel. So:
 
 - the idle pod holds **no GitHub credential**. The Renovate loop's token is an optional file grant of its
-  own scheduled process, written to Vault only after deploy-kit#874 narrows egress to GitHub, and read
+  own scheduled process, written to Vault only now that egress is narrowed to GitHub, and read
   by the loop's `git push` through a credential helper, never from the environment;
 - mint every tier key with a budget and its tier's models only, so a leaked key is bounded and revocable.
 
@@ -99,7 +103,7 @@ started from. A patch that touches `.github/` is refused. Otherwise the patch is
 clone (so no hook or git configuration the subagent wrote is ever used), committed, and pushed from there
 to an explicit URL through a git credential helper that reads the token file. This keeps the token out of
 every argument and environment but git's. It does **not** hide the file from the subagent, which runs as
-the same user in the same pod: the bounds are the token's scope and deploy-kit#874. A run repairs at most
+the same user in the same pod: the bounds are the token's scope and the egress narrowed to GitHub. A run repairs at most
 `--max-repairs` pull requests (default 2), so it fits its hourly slot; the rest wait for the next run.
 Draft pull requests are left alone, and tool output goes to the log, never into a comment.
 
@@ -119,9 +123,9 @@ A dry run makes no merge, comment or push and starts no subagent: it prints one 
 line per pull request. Exit status: 0, 1 if any pull request or repository errored, 2 for no usable token.
 
 On the cluster it is the `renovate-repair` scheduled process of `deploy/hermes.project.yml` (hourly, at
-minute 17). It waits on deploy-kit#874: do not write `secret/data/hermes/github` (key
-`renovate_repair_token`) in Vault before that egress narrowing is in the Project. Without the key the file is
-not mounted and each run exits 2 having done nothing.
+minute 17), with the same egress as the idle process: GitHub through its own allowlisting proxy, LiteLLM over
+the edge. The token lives at `secret/data/hermes/github` (key `renovate_repair_token`). Without the key the
+file is not mounted and each run exits 2 having done nothing.
 
 ## Develop
 
@@ -144,9 +148,12 @@ scripts/smoke.sh                    # namespace hermes-system, deployment hermes
 SMOKE_EGRESS=skip scripts/smoke.sh  # everything except the egress check
 ```
 
-The egress check fails today, on purpose: deploy-kit can declare only `egress: internet` (every
-public address), not GitHub alone, and its NetworkPolicy is render-only in v1. See the open
-points in the pull request.
+The egress check expects the narrowed egress: `github.com` and `api.github.com` answer through the
+proxy the pod is given (`HTTPS_PROXY`), and a direct connection to any host, `example.com`,
+`pypi.org`, `api.openai.com` or `openrouter.ai` included, fails, as does a request through the proxy
+to a host it does not list. `SMOKE_EGRESS=skip` skips it. Run it once after the first rollout of the
+host-narrowed egress: it is the live check the render's container proof (deploy-kit decision record
+0154) leaves to the cluster.
 
 The design is tracked in JorisJonkers-dev/agent-kit#911. The inference plan is in
 JorisJonkers-dev/litellm#57 (`docs/free-inference.md`).
