@@ -7,13 +7,15 @@
 #   - a throwaway clone: /work is an emptyDir, empty at every start and gone with the pod;
 #   - non-root and a read-only root filesystem: deploy-kit's hardening posture, with the image's own
 #     unprivileged user (uid 10001) and /tmp, /work and /home/hermes as the only writable paths;
-#   - egress: the edge to litellm below (an in-cluster Service) and internet egress, which is every
-#     public address: the Intent has no way to name GitHub alone (see `egress` and the residual risk).
+#   - egress: the edge to litellm below (an in-cluster Service) and two named public hosts,
+#     api.github.com and github.com on 443, reached only through the Process's own allowlisting proxy
+#     (deploy-kit 1.12.0, host-narrowed egress; see `egress` and the residual risk).
 #
 # Residual risk: this pod reads untrusted content (pull requests of public repositories) while it holds
 # tier keys in its environment and can reach every public address. A prompt injection could send a key
-# out. Until deploy-kit can narrow egress to named hosts, the bounds are tier-scoped, budgeted keys and
-# the absence of any GitHub credential.
+# out, to GitHub or through it. The bounds are the host allowlist (a key cannot be sent to any other
+# host), tier-scoped, budgeted keys and the absence of any GitHub credential. The proxy decides by
+# name and the DNS of the cluster stays reachable, so a covert channel in DNS queries remains.
 #
 # Hermes's idle process only holds the sandbox open. Loops (the Renovate repair loop first) arrive
 # as `lifecycle: scheduled` processes of this Application, each running `hermes chat -q`.
@@ -42,15 +44,16 @@ applications:
         dependsOn:
           - { application: litellm, surface: http }
 
-        # GitHub: the clone, the pushes and the pull requests of a loop. deploy-kit's `egress` is
-        # one closed value, `internet`, which admits every public IPv4 address and never a private,
-        # tailnet or link-local range. The Intent has no field to narrow it to github.com and
-        # api.github.com, so the declared rule is wider than the requirement ("only LiteLLM and
-        # GitHub"). Narrowing needs a deploy-kit feature: tracked in the pull request that adds this.
+        # GitHub: the clone, the pushes and the pull requests of a loop. The Process may reach these
+        # two hosts on 443 and nothing else public: deploy-kit derives an allowlisting proxy for it
+        # (`hermes-egress`), points HTTPS_PROXY at it, keeps the cluster's names and the LiteLLM edge
+        # on NO_PROXY, and applies the policy pair that leaves the pod no other public route.
         egress:
-          to: internet
           reason: >-
-            Clones the public repositories a loop works on from GitHub. No other host is called: models come from LiteLLM, over the edge above.
+            Clones the public repositories a loop works on from GitHub, and pushes and opens pull requests there. No other host is called: models come from LiteLLM, over the edge above.
+          hosts:
+            - { host: api.github.com, port: 443 }
+            - { host: github.com, port: 443 }
 
         secrets:
           # Placeholder names: the owner writes the values with estate bootstrap/secrets.sh.
@@ -59,7 +62,7 @@ applications:
           # litellm_tier_strong_open_key is the escalation key: leave it out of the secret and
           # tier-strong-open is simply refused by the proxy.
           # Each key should be minted with a budget (litellm max_budget): the keys are in this process's
-          # environment, and the egress below is wider than GitHub, so a budget bounds a leak.
+          # environment, so a budget bounds a leak.
           # There is deliberately no GitHub token here; see env/hermes/base.env.
           - path: secret/data/hermes/hermes
             keys:
