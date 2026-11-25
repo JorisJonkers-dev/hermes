@@ -39,6 +39,10 @@ def _stdout_sink(line: str) -> None:
     sys.stdout.flush()
 
 
+#: The log writer, public so another module that logs to the same place (the loops) reuses it.
+write_line = _stdout_sink
+
+
 def _as_int(value: str | None) -> int | None:
     try:
         return int(value) if value is not None else None

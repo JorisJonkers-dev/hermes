@@ -56,6 +56,8 @@ COPY --from=build /opt/hermes /opt/hermes
 COPY --from=build /src /src
 COPY config/config.yaml /opt/hermes-seed/config.yaml
 COPY plugins/ /opt/hermes-seed/plugins/
+# The loops sit beside plugins/ as they do in the repository: a loop finds the plugin's modules by that layout.
+COPY loops/ /opt/hermes-seed/loops/
 COPY docker/render_config.py /opt/hermes-seed/render_config.py
 COPY docker/entrypoint.sh /usr/local/bin/hermes-entrypoint
 
